@@ -27,6 +27,7 @@ This project use arduino nano 33 IOT. The library to use are:
 - CapacitiveSensor by Paul Badger, Paus Stoffregen
 - Adafruit NeoPixel by Adafruit
 - PubSubClient by Nick O'Leary
+- WiFiNINA by Arduino
 
 ### Mechanic Mechanic
 
