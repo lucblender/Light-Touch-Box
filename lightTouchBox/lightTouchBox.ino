@@ -1,7 +1,22 @@
 #include <CapacitiveSensor.h>
 #include <Adafruit_NeoPixel.h>
 
-//#define DEBUG
+#include <WiFiNINA.h> 
+#include <PubSubClient.h>
+
+
+
+
+const char* ssid = networkSSID;
+const char* password = networkPASSWORD;
+const char* mqttServer = mqttSERVER;
+const char* mqttUsername = mqttUSERNAME;
+const char* mqttPassword = mqttPASSWORD;
+
+WiFiClient wifiClient;
+PubSubClient client(wifiClient);
+
+#define DEBUG
 
 #ifdef DEBUG
  #define DEBUG_PRINT(x)     Serial.print (x)
@@ -15,10 +30,13 @@
 
 #define BAUD_RATE         115200
 #define LED_STRIP_PIN     6
-#define THREASHOLD_OVER   80
-#define THREASHOLD_TOUCH  300
+#define THREASHOLD_OVER   250
+#define THREASHOLD_TOUCH  2000
 #define LED_COUNT         16
 #define LED_SINUS_LENGHT  12.4
+#define DEBOUNCE_LIMIT    5
+
+uint8_t debounceCycle = 0;
 
 Adafruit_NeoPixel strip(LED_COUNT, LED_STRIP_PIN, NEO_GRB + NEO_KHZ800);
 
@@ -28,7 +46,9 @@ uint8_t b = 0;
 
 enum{
   IDLE,
+  OVERING_DEBOUNCE,
   OVERING,
+  TOUCH_DEBOUNCE,
   TOUCH
 }stateSelf = IDLE;
 int lastStateSelf = IDLE;
@@ -45,9 +65,89 @@ enum{
 }stateLight = IDLE_LIGHT;
 int lastStateLight = IDLE_LIGHT;
 
+
+void setup_wifi() 
+{
+  delay(10);
+  
+  // We start by connecting to a WiFi network
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) 
+  {
+    delay(500);
+    Serial.print(".");
+  }
+
+  randomSeed(micros());
+
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void callback(char* topic, byte* payload, unsigned int length) 
+{
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
+  for (int i = 0; i < length; i++) 
+  {
+    Serial.print((char)payload[i]);
+  }
+  Serial.println();
+  if ((char)payload[0] == '0') 
+  {
+    statePartner =   _IDLE;
+  }
+  else if ((char)payload[0] == '1') 
+  {
+    statePartner =  _OVERING;
+  }
+  else if ((char)payload[0] == '2') 
+  {
+    statePartner = _TOUCH;
+  }
+}
+
+void reconnect() 
+{
+  // Loop until we're reconnected
+  while (!client.connected()) 
+  {
+    Serial.print("Attempting MQTT connection...");
+    // Create a random client ID
+    String clientId = "ArduinoClient-";
+    clientId += String(random(0xffff), HEX);
+    // Attempt to connect
+    if (client.connect(clientId.c_str(), mqttUsername, mqttPassword)) 
+    {
+      Serial.println("connected");
+      // ... and resubscribe
+      client.subscribe(subTopic);
+    } else 
+    {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
+
 void setup()                    
 {
   Serial.begin(BAUD_RATE);
+  
+  setup_wifi();
+  client.setServer(mqttServer, 1883);
+  client.setCallback(callback);
    
   strip.begin();
   strip.show(); // Initialize all pixels to 'off'
@@ -58,6 +158,15 @@ void loop()
   long total1 =  cs_4_2.capacitiveSensor(80);  
 
   DEBUG_PRINTLN(total1);
+
+
+  if (!client.connected()) 
+  {
+    reconnect();
+  }
+  client.loop();
+
+  
   //TEMPORARY will use mqtt to send and retreive the capacitive sensor data
   if (Serial.available() > 0) {
     int incomingByte = Serial.read();
@@ -73,9 +182,27 @@ void loop()
   switch (lastStateSelf)
   {
     case IDLE:
+      //define in what state we are
+      if(total1>THREASHOLD_TOUCH)
+        stateSelf = TOUCH;
+      else if(total1>THREASHOLD_OVER)
+        stateSelf = OVERING_DEBOUNCE;
+      else    
+        stateSelf = IDLE;
+      break;
+    case OVERING_DEBOUNCE:       
+      if(total1>THREASHOLD_TOUCH)
+        stateSelf = TOUCH;  
+      else if(total1>THREASHOLD_OVER && total1 < THREASHOLD_TOUCH){
+        debounceCycle++;
+        if(debounceCycle >= DEBOUNCE_LIMIT)
+          stateSelf = OVERING;
+      }else{
+          stateSelf = IDLE;        
+      }
+      break;
     case OVERING:
     case TOUCH:
-      //define in what state we are
       if(total1>THREASHOLD_TOUCH)
         stateSelf = TOUCH;
       else if(total1>THREASHOLD_OVER)
@@ -89,17 +216,28 @@ void loop()
   }
 
   if(stateSelf != lastStateSelf)
-  {
+  {    
+    char payLoad[1];
     switch (stateSelf)
     {
-      case IDLE:
-        DEBUG_PRINTLN("Enter IDLE send mqtt here");
-        break;      
+      case IDLE:      
+        itoa(0, payLoad, 10);
+        client.publish(pubTopic, payLoad);
+        DEBUG_PRINTLN("Enter IDLE TODO send mqtt here");
+        break;    
+      case OVERING_DEBOUNCE:        
+        debounceCycle = 0;
+        DEBUG_PRINTLN("Enter OVERING_DEBOUNCE TODO send mqtt here");
+        break;  
       case OVERING:
-        DEBUG_PRINTLN("Enter OVERING send mqtt here");
+        itoa(1, payLoad, 10);
+        client.publish(pubTopic, payLoad);
+        DEBUG_PRINTLN("Enter OVERING TODO send mqtt here");
         break;
-      case TOUCH:
-        DEBUG_PRINTLN("Enter TOUCH send mqtt here");
+      case TOUCH:      
+        itoa(2, payLoad, 10);
+        client.publish(pubTopic, payLoad);
+        DEBUG_PRINTLN("Enter TOUCH TODO send mqtt here");
         break;
     }
     lastStateSelf = stateSelf;
@@ -108,14 +246,18 @@ void loop()
   switch (lastStateLight)
   {
     case IDLE_LIGHT:
-      if(stateSelf!=IDLE || statePartner!=_IDLE){
+        DEBUG_PRINTLN("IDLE_LIGHT");  
+      if((stateSelf!=IDLE&&stateSelf!=OVERING_DEBOUNCE) || statePartner!=_IDLE){
         stateLight = ON_LIGHT;
       }
+      break;
     case ON_LIGHT:
+        DEBUG_PRINTLN("ON_LIGHT");  
       light();
-      if(stateSelf==IDLE && statePartner==_IDLE){
+      if((stateSelf==IDLE||stateSelf==OVERING_DEBOUNCE) && statePartner==_IDLE){
         stateLight = IDLE_LIGHT;
       }
+      break;
     default:
       break;
   }
@@ -140,6 +282,7 @@ void loop()
 }
 
 void light(){
+  DEBUG_PRINTLN("light");
     //go through all leds to light them properly
   for(int i= 0; i<LED_COUNT; i++){
 
